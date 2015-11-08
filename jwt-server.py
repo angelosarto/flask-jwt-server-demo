@@ -81,7 +81,7 @@ app.debug = True
 CORS(app)
 TOKEN_ALG = 'HS256'
 SECRET = 'secretX'
-TOKEN_TIMEOUT = 150
+TOKEN_TIMEOUT = 15
 
 @app.route('/refresh', methods=['POST'])
 def refresh():
@@ -93,8 +93,8 @@ def refresh():
         encoded_token = jwt.encode(token, SECRET, algorithm=TOKEN_ALG)
         return jsonify({'token': encoded_token.decode()})
 
-    except:
-        return "Auth Failed:", 403
+    except Exception as e:
+        return "Auth Failed: " + str(e), 403
 
 
 @app.route('/auth', methods=['POST'])
