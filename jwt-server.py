@@ -1,12 +1,11 @@
-import datetime
+from datetime import datetime, timezone, timedelta
 import enum
 from functools import wraps
 import logging
 
-from flask import Flask, request, Response
+from flask import Flask, request, Response, jsonify, g
 import jwt
 from flask.ext.cors import CORS
-
 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
@@ -17,37 +16,44 @@ class AuthorizationResponse(enum.Enum):
     UNAUTHORIZED = 3,
     USER_INVALID = 4
 
-
-class Permission(enum.Enum):
-    READ = 0,
-    WRITE = 1,
-    ADMIN = 2,
-
-
-def authenticate_user(f):
+def protected_route(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # logging.debug("kwargs: {}".format(kwargs))
-        auth, token = verify_token()
+        token_auth, token = verify_token()
         # if token failed return false
-        if auth != AuthorizationResponse.AUTHORIZED:
-            if auth == AuthorizationResponse.EXPIRED_TOKEN:
+        if token_auth != AuthorizationResponse.AUTHORIZED:
+            if token_auth == AuthorizationResponse.EXPIRED_TOKEN:
                 return Response("Token has expired", status=401)
-            if auth == AuthorizationResponse.INVALID_TOKEN:
+            elif token_auth == AuthorizationResponse.INVALID_TOKEN:
                 return Response("Token is invalid", status=401, headers={'WWW-Authenticate': 'Bearer'})
-        user = lite_load_user_perm(token.get('uid'))
-        kwargs['CURRENT_USER'] = user
+            else:
+                return Response("Unknown Authentication Error", status=500)
+
+        g.user = set_user_object(token)
+
+        access_auth = authorize_request(request, token)
+        if access_auth != AuthorizationResponse.AUTHORIZED:
+            if access_auth == AuthorizationResponse.UNAUTHORIZED:
+                return Response("User does not have access to this function", status=403)
+            else:
+                return Response("Unknown Authorization Error", status=500)
         return f(*args, **kwargs)
     return decorated_function
 
+def authorize_request(request, token):
+    # using properties on the token, or use token to lookup user permissions in a DB.
+    # then compare to the request
 
-def lite_load_user_perm(uid):
-    return "User info for{}".format(uid)
+    if request.method == 'GET' and token.get('uid') == 1 \
+            and g.user['etc'] == 'etc' \
+            and request.path == '/protected_api':
+        return AuthorizationResponse.AUTHORIZED
+    else:
+        return AuthorizationResponse.UNAUTHORIZED
 
-
-def verify_access(userinfo, params):
-    return True, None
-
+def set_user_object(token):
+    # set the flask user from the token, load from the token, lookup in DB, load from redis, etc.
+    return {'name': 'joe user', 'uid': token.get('uid'), 'etc': 'etc'}
 
 def verify_token():
     auth = request.headers.get('Authorization', None)
@@ -64,7 +70,7 @@ def verify_token():
         payload = jwt.decode(parts[1], SECRET, algorithms='HS256')
     except jwt.ExpiredSignatureError:
         return AuthorizationResponse.EXPIRED_TOKEN, None
-    except jwt.InvalidTokenError as e:
+    except jwt.InvalidTokenError:
         return AuthorizationResponse.INVALID_TOKEN, None
 
     return AuthorizationResponse.AUTHORIZED, payload
@@ -73,12 +79,23 @@ def verify_token():
 app = Flask(__name__)
 app.debug = True
 CORS(app)
+TOKEN_ALG = 'HS256'
 SECRET = 'secretX'
+TOKEN_TIMEOUT = 150
 
-@app.route('/auth2', methods=['POST'])
-def authenticate2():
-    print("hello")
-    return
+@app.route('/refresh', methods=['POST'])
+def refresh():
+    try:
+        auth = request.get_json()
+        encoded_token = auth.get('token', None)
+        token = jwt.decode(encoded_token, 'secretX', algorithms=TOKEN_ALG)
+        token['exp'] = int((datetime.now(timezone.utc) + timedelta(seconds=TOKEN_TIMEOUT)).timestamp())
+        encoded_token = jwt.encode(token, SECRET, algorithm=TOKEN_ALG)
+        return jsonify({'token': encoded_token.decode()})
+
+    except:
+        return "Auth Failed:", 403
+
 
 @app.route('/auth', methods=['POST'])
 def authenticate():
@@ -88,24 +105,23 @@ def authenticate():
     if username == 'joe' and password == 'pass':
         uid = 1
         token = {'uid': uid,
-                 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=10),
+                 'exp': int((datetime.now(timezone.utc) + timedelta(seconds=TOKEN_TIMEOUT)).timestamp()),
                }
-        return jwt.encode(token, SECRET, algorithm='HS256')
+        encoded_token = jwt.encode(token, SECRET, algorithm=TOKEN_ALG)
+        return jsonify({'token': encoded_token.decode()})
 
     return "Auth Failed", 403
 
-@app.route('/protected/<p1>')
-@authenticate_user  #user object willbe added to end of call
-def protected(p1, CURRENT_USER):
-    authorized, cause = verify_access(CURRENT_USER, "some mapping of permission and object")
-    if not authorized:
-        return Response("You do not have permission to access this function:{}".format(cause), status=403)
+@app.route('/open_api')
+def open_api():
+    msg = {"msg":"this api can be called with nothing"}
+    return jsonify(msg)
 
-    return 'Success!'
-
-@app.route('/')
-def open():
-    return 'Open Area!'
+@app.route('/protected_api')
+@protected_route
+def protected_api():
+    msg = {"msg":"this api requires a token", "accessed_by": g.user['name']}
+    return jsonify(msg)
 
 if __name__ == '__main__':
     app.run()
