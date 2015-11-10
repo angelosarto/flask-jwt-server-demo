@@ -23,20 +23,22 @@ def protected_route(f):
         # if token failed return false
         if token_auth != AuthorizationResponse.AUTHORIZED:
             if token_auth == AuthorizationResponse.EXPIRED_TOKEN:
-                return Response("Token has expired", status=401)
+                return jsonify({'error': 'authn_token_expired', 'msg':'token has expired'}), 401
             elif token_auth == AuthorizationResponse.INVALID_TOKEN:
-                return Response("Token is invalid", status=401, headers={'WWW-Authenticate': 'Bearer'})
+                resp = jsonify({'error': 'authn_token_invalid', 'msg':'token is invalid'})
+                resp.headers.add_header('WWW-Authenticate', 'Bearer')
+                return resp, 401
             else:
-                return Response("Unknown Authentication Error", status=500)
+                return jsonify({'error': 'authn_unknown', 'msg':'unknown refresh error'}), 500
 
         g.user = set_user_object(token)
 
         access_auth = authorize_request(request, token)
         if access_auth != AuthorizationResponse.AUTHORIZED:
             if access_auth == AuthorizationResponse.UNAUTHORIZED:
-                return Response("User does not have access to this function", status=403)
+                return jsonify({'error': 'authz_unauthorized', 'msg':'User does not have access to this function/object'}), 403
             else:
-                return Response("Unknown Authorization Error", status=500)
+                return jsonify({'error': 'authz_unknown', 'msg':'unknown authorization error'}), 500
         return f(*args, **kwargs)
     return decorated_function
 
@@ -94,8 +96,9 @@ def refresh():
         return jsonify({'token': encoded_token.decode()})
 
     except Exception as e:
-        return "Auth Failed: " + str(e), 403
-
+        resp = jsonify({'error': 'token_refresh_failed', 'msg': str(e)})
+        resp.headers.add_header('WWW-Authenticate', 'Bearer')
+        return resp, 403
 
 @app.route('/auth', methods=['POST'])
 def authenticate():
@@ -110,7 +113,9 @@ def authenticate():
         encoded_token = jwt.encode(token, SECRET, algorithm=TOKEN_ALG)
         return jsonify({'token': encoded_token.decode()})
 
-    return "Auth Failed", 403
+    resp = jsonify({'error': 'authentication_failed', 'msg': 'username/password invalid'})
+    resp.headers.add_header('WWW-Authenticate', 'Bearer')
+    return resp, 403
 
 @app.route('/open_api')
 def open_api():
